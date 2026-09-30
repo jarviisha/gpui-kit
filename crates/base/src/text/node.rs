@@ -1972,18 +1972,19 @@ impl CodeBlock {
                 )
                 .read(cx)
                 .clone();
-            // Scroll mode is opted in via `style.code_block` overflow-y: scroll.
+            // Scroll mode is opted in by setting `style.code_block`'s
+            // `overflow.y` to `Overflow::Scroll`.
             // The mask consumes the wheel in the capture phase, so an ancestor
             // `gpui::list` doesn't scroll on the same event. Mask, scrollbar
             // and actions are siblings of the scrolled block, so they stay
             // pinned to the viewport instead of moving with the code.
             div()
-                .id(id)
+                .id(id.clone())
                 .w_full()
                 .min_w_0()
                 .relative()
                 .child(block.id("scroll").track_scroll(&scroll_handle))
-                .child(ScrollableMask::new(Axis::Vertical, &scroll_handle))
+                .child(ScrollableMask::new(Axis::Vertical, &scroll_handle).id(id))
                 .child(
                     div()
                         .absolute()

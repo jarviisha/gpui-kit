@@ -870,7 +870,8 @@ mod tests {
         AppContext as _, Bounds, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
         Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Overflow, ParentElement as _, Pixels,
         Render, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-        TestAppContext, VisualTestContext, Window, div, point, px, rems,
+        TestAppContext, VisualTestContext, Window, div, point, prelude::FluentBuilder as _, px,
+        rems,
     };
 
     struct TextViewTestRoot {
@@ -1676,61 +1677,91 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn scrolling_code_block_keeps_wheel_from_the_list(cx: &mut TestAppContext) {
-        struct ScrollingCodeRoot;
+    /// Height cap of the scrolling code block in [`ScrollingCodeRoot`].
+    const CODE_HEIGHT: Pixels = px(60.);
 
-        impl Render for ScrollingCodeRoot {
-            fn render(
-                &mut self,
-                _window: &mut Window,
-                _cx: &mut Context<Self>,
-            ) -> impl IntoElement {
-                let code = (0..50).map(|i| format!("line {i}\n")).collect::<String>();
-                let tail = "Paragraph after the code.\n\n".repeat(20);
-                let mut code_block = StyleRefinement::default().max_h(px(60.));
-                code_block.overflow.y = Some(Overflow::Scroll);
+    struct ScrollingCodeRoot {
+        text_view: Entity<TextViewState>,
+        actions: bool,
+    }
 
-                div().w(px(320.)).h(px(200.)).child(
-                    TextView::markdown("scrolling-code", format!("```\n{code}```\n\n{tail}"))
-                        .style(TextViewStyle::default().with_code_block(code_block))
-                        .code_block_actions(|_, _, _| {
+    impl Render for ScrollingCodeRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let mut code_block = StyleRefinement::default().max_h(CODE_HEIGHT);
+            code_block.overflow.y = Some(Overflow::Scroll);
+
+            div().w(px(320.)).h(px(200.)).child(
+                TextView::new(&self.text_view)
+                    .style(TextViewStyle::default().with_code_block(code_block))
+                    .when(self.actions, |this| {
+                        this.code_block_actions(|_, _, _| {
                             div().debug_selector(|| "code-action".into()).child("Copy")
                         })
-                        .scrollable(true),
-                )
-            }
+                    })
+                    .scrollable(true),
+            )
         }
+    }
 
+    #[gpui::test]
+    fn scrolling_code_block_keeps_wheel_from_the_list(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let (_, cx) = cx.add_window_view(|_, _| ScrollingCodeRoot);
-        let cx: &mut VisualTestContext = cx;
-        let draw = |cx: &mut VisualTestContext| {
-            cx.run_until_parked();
-            cx.update(|window, cx| {
-                let _ = window.draw(cx);
-            });
-        };
-        let wheel_at = |cx: &mut VisualTestContext, y: f32| {
-            cx.simulate_event(gpui::ScrollWheelEvent {
-                position: point(px(20.), px(y)),
-                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-20.))),
-                ..Default::default()
-            });
-        };
-        draw(cx);
-        let before = cx.debug_bounds("code-action").unwrap();
+        let code = (0..50).map(|i| format!("line {i}\n")).collect::<String>();
+        let tail = "Paragraph after the code.\n\n".repeat(20);
+        let markdown = format!("```\n{code}```\n\n{tail}");
 
-        // Over the code block: the code scrolls, the list and the pinned
-        // actions stay put.
-        wheel_at(cx, 30.);
-        draw(cx);
-        assert_eq!(cx.debug_bounds("code-action").unwrap(), before);
+        // Scrolling must not depend on `code_block_actions`, which is what
+        // gives a non-scrolling block its id.
+        for actions in [false, true] {
+            let (root, cx) = cx.add_window_view(|_, cx| ScrollingCodeRoot {
+                text_view: cx.new(|cx| TextViewState::markdown(&markdown, cx)),
+                actions,
+            });
+            let cx: &mut VisualTestContext = cx;
+            let draw = |cx: &mut VisualTestContext| {
+                cx.run_until_parked();
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            };
+            let step = px(20.);
+            let wheel_at = |cx: &mut VisualTestContext, y: Pixels| {
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position: point(px(20.), y),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), -step)),
+                    ..Default::default()
+                });
+            };
+            // The code block is first in the view, and painted lines are
+            // clipped to its viewport: the first code line's bottom moves with
+            // the code, the first line below the viewport moves with the list.
+            let edges = |cx: &mut VisualTestContext| {
+                let lines = root.read_with(cx, |root, cx| {
+                    root.text_view.read(cx).selection_adapter.text_bounds()
+                });
+                let paragraph = lines.iter().find(|line| line.top() >= CODE_HEIGHT).unwrap();
+                (lines[0].bottom(), paragraph.top())
+            };
+            draw(cx);
+            let (code_bottom, paragraph_top) = edges(cx);
+            let action = cx.debug_bounds("code-action");
 
-        // Below the code block the list still scrolls.
-        wheel_at(cx, 150.);
-        draw(cx);
-        assert!(cx.debug_bounds("code-action").unwrap().top() < before.top());
+            // Over the code block: the code scrolls, the list and the pinned
+            // actions stay put.
+            wheel_at(cx, CODE_HEIGHT / 2.);
+            draw(cx);
+            assert_eq!(
+                edges(cx),
+                (code_bottom - step, paragraph_top),
+                "actions: {actions}"
+            );
+            assert_eq!(cx.debug_bounds("code-action"), action);
+
+            // Below the code block the list still scrolls. Only inequality
+            // holds: once the paragraph moves into the code's band, `edges`
+            // picks the next one down.
+            wheel_at(cx, CODE_HEIGHT * 2.5);
+            draw(cx);
+            assert_ne!(edges(cx).1, paragraph_top, "actions: {actions}");
+        }
     }
 
     /// Draw a Markdown table with a `table_actions` hook installed, and return
