@@ -1676,6 +1676,63 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn scrolling_code_block_keeps_wheel_from_the_list(cx: &mut TestAppContext) {
+        struct ScrollingCodeRoot;
+
+        impl Render for ScrollingCodeRoot {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                let code = (0..50).map(|i| format!("line {i}\n")).collect::<String>();
+                let tail = "Paragraph after the code.\n\n".repeat(20);
+                let mut code_block = StyleRefinement::default().max_h(px(60.));
+                code_block.overflow.y = Some(Overflow::Scroll);
+
+                div().w(px(320.)).h(px(200.)).child(
+                    TextView::markdown("scrolling-code", format!("```\n{code}```\n\n{tail}"))
+                        .style(TextViewStyle::default().with_code_block(code_block))
+                        .code_block_actions(|_, _, _| {
+                            div().debug_selector(|| "code-action".into()).child("Copy")
+                        })
+                        .scrollable(true),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| ScrollingCodeRoot);
+        let cx: &mut VisualTestContext = cx;
+        let draw = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+        };
+        let wheel_at = |cx: &mut VisualTestContext, y: f32| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: point(px(20.), px(y)),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-20.))),
+                ..Default::default()
+            });
+        };
+        draw(cx);
+        let before = cx.debug_bounds("code-action").unwrap();
+
+        // Over the code block: the code scrolls, the list and the pinned
+        // actions stay put.
+        wheel_at(cx, 30.);
+        draw(cx);
+        assert_eq!(cx.debug_bounds("code-action").unwrap(), before);
+
+        // Below the code block the list still scrolls.
+        wheel_at(cx, 150.);
+        draw(cx);
+        assert!(cx.debug_bounds("code-action").unwrap().top() < before.top());
+    }
+
     /// Draw a Markdown table with a `table_actions` hook installed, and return
     /// the painted bounds of the actions element plus the data it received.
     /// `scroll` opts into the horizontally scrollable table layout.
